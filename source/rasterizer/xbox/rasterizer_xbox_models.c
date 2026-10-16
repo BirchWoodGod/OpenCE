@@ -548,6 +548,17 @@ static pixel32 local_model_cc0_error_pixel = 0;
 static pixel32 local_model_cc1_pixel = 0;
 static boolean local_model_self_illumination_phase_valid = FALSE;
 static real local_model_self_illumination_phase = 0.0f;
+/* port: the shader, permutation and vertex type of the model's last part
+drawn with all of its states set (NULL for none). The next part with the
+same three sets the same states, textures and constants (made from the
+shader, the model's parameters and the frame's time), so it is only drawn.
+Cleared by anything that draws or changes those states in between: a
+two-sided part's second pass, a fog screen, an effect, a transparent
+submission, an environment shader part, the statistics or the debug model
+vertices. */
+static struct shader *local_last_part_shader = NULL;
+static short local_last_part_shader_permutation_index = NONE;
+static short local_last_part_vertex_type = NONE;
 extern boolean rasterizer_model_cortana_hack;
 
 /* ---------- public code */
@@ -672,6 +683,7 @@ void _rasterizer_model_begin(
 		local_model_camera_distance_valid = FALSE;
 		local_model_fog_valid = FALSE;
 		local_model_self_illumination_phase_valid = FALSE;
+		local_last_part_shader = NULL;
 
 		if (rasterizer_debug_options.active_camouflage_enabled &&
 			global_window_parameters.rasterizer_target == 0 &&
@@ -1644,6 +1656,7 @@ void _rasterizer_model_draw(
 	unsigned long seed;
 	real self_illumination_phase;
 	real self_illumination_animation_fraction;
+	short vertex_type;
 
 	match_assert(
 		"c:\\halo\\SOURCE\\rasterizer\\xbox\\rasterizer_xbox_models.c",
@@ -1731,6 +1744,7 @@ void _rasterizer_model_draw(
 		{
 			if (shader->base.type == _shader_type_environment)
 			{
+				local_last_part_shader = NULL; /* port */
 				rasterizer_model_draw_environment_shader(
 					shader,
 					shader_permutation_index,
@@ -1752,6 +1766,26 @@ void _rasterizer_model_draw(
 					"c:\\halo\\SOURCE\\rasterizer\\xbox\\rasterizer_xbox_models.c",
 					771,
 					local_model_effect_type==_render_model_effect_type_none);
+
+				/* port: a part with the last part's shader, permutation and
+				vertex type is drawn with the states that part set */
+				vertex_type = vertex_buffer ?
+					vertex_buffer->type :
+					rasterizer_dynamic_vertices_get_type(dynamic_vertex_buffer_index);
+				if (local_last_part_shader == shader &&
+					local_last_part_shader_permutation_index == shader_permutation_index &&
+					local_last_part_vertex_type == vertex_type)
+				{
+					rasterizer_draw(
+						triangle_buffer,
+						dynamic_triangle_buffer_index,
+						0,
+						triangle_count,
+						vertex_buffer,
+						dynamic_vertex_buffer_index);
+					return;
+				}
+				local_last_part_shader = NULL;
 
 				/* port: the model's first part works out the distance */
 				if (local_model_camera_distance_valid)
@@ -2437,6 +2471,22 @@ void _rasterizer_model_draw(
 								vertex_buffer);
 					}
 				}
+
+				/* port: the part's states stand for the next part with its
+				shader, permutation and vertex type, unless something drawn
+				after it changes them */
+				if (!TEST_FLAG(
+						shader_model->model.flags,
+						_shader_model_two_sided_bit) &&
+					!local_environment_fog_screen_flag &&
+					!local_parameters->effect.modifier_shader &&
+					!rasterizer_debug_options.statistics_mode &&
+					!rasterizer_debug_options.debug_model_vertices_enabled)
+				{
+					local_last_part_shader = shader;
+					local_last_part_shader_permutation_index = shader_permutation_index;
+					local_last_part_vertex_type = vertex_type;
+				}
 			}
 
 			if (local_environment_fog_screen_flag)
@@ -2482,6 +2532,8 @@ struct transparent_geometry_group *_rasterizer_model_transparent_geometry_submit
 	boolean alpha_blended_decal;
 	boolean submit_decals;
 
+	/* port: a submission can draw now, after another state */
+	local_last_part_shader = NULL;
 	if (rasterizer_debug_options.draw_models &&
 		rasterizer_debug_options.draw_model_transparent_geometry)
 	{
