@@ -536,6 +536,18 @@ static boolean local_environment_fog_screen_flag = FALSE;
 static boolean local_do_not_change_z_stencil_states = FALSE;
 static boolean local_reported_too_many_transparent_geometry_groups = FALSE;
 static boolean local_pixel_shader_dirty_flag = TRUE;
+/* port: what every part of a model works out alike, kept from its first
+part until the next model: the camera's distance to the model's centroid,
+the fog's combiner colours, and the self-illumination's random phase
+(seeded with the model's unique identifier) */
+static boolean local_model_camera_distance_valid = FALSE;
+static real local_model_camera_distance = 0.0f;
+static boolean local_model_fog_valid = FALSE;
+static pixel32 local_model_cc0_pixel = 0;
+static pixel32 local_model_cc0_error_pixel = 0;
+static pixel32 local_model_cc1_pixel = 0;
+static boolean local_model_self_illumination_phase_valid = FALSE;
+static real local_model_self_illumination_phase = 0.0f;
 extern boolean rasterizer_model_cortana_hack;
 
 /* ---------- public code */
@@ -656,6 +668,10 @@ void _rasterizer_model_begin(
 		local_parameters_queued_flag = FALSE;
 		local_do_not_change_z_stencil_states =
 			do_not_change_z_stencil_states;
+		/* port: a new model's parts share nothing with the last's */
+		local_model_camera_distance_valid = FALSE;
+		local_model_fog_valid = FALSE;
+		local_model_self_illumination_phase_valid = FALSE;
 
 		if (rasterizer_debug_options.active_camouflage_enabled &&
 			global_window_parameters.rasterizer_target == 0 &&
@@ -1737,13 +1753,23 @@ void _rasterizer_model_draw(
 					771,
 					local_model_effect_type==_render_model_effect_type_none);
 
-				vector_from_points3d(
-					&global_window_parameters.camera.position,
-					&local_parameters->centroid,
-					&camera_to_model);
-				camera_distance = dot_product3d(
-					&camera_to_model,
-					&global_window_parameters.camera.forward);
+				/* port: the model's first part works out the distance */
+				if (local_model_camera_distance_valid)
+				{
+					camera_distance = local_model_camera_distance;
+				}
+				else
+				{
+					vector_from_points3d(
+						&global_window_parameters.camera.position,
+						&local_parameters->centroid,
+						&camera_to_model);
+					camera_distance = dot_product3d(
+						&camera_to_model,
+						&global_window_parameters.camera.forward);
+					local_model_camera_distance = camera_distance;
+					local_model_camera_distance_valid = TRUE;
+				}
 
 				if (shader_model->model.reflection_cutoff_distance != 0.0f)
 				{
@@ -1912,7 +1938,14 @@ void _rasterizer_model_draw(
 				}
 				else
 				{
-					self_illumination_phase = real_seed_random(&seed);
+					/* port: the same for each part: the model's first part
+					works it out */
+					if (!local_model_self_illumination_phase_valid)
+					{
+						local_model_self_illumination_phase = real_seed_random(&seed);
+						local_model_self_illumination_phase_valid = TRUE;
+					}
+					self_illumination_phase = local_model_self_illumination_phase;
 				}
 
 				match_assert(
@@ -2195,7 +2228,14 @@ void _rasterizer_model_draw(
 					1077,
 					global_window_parameters.fog.planar_maximum_depth>0.0f);
 
-				if (rasterizer_debug_options.draw_environment_fog &&
+				/* port: the fog's colours are the model's first part's */
+				if (local_model_fog_valid)
+				{
+					cc0_pixel = local_model_cc0_pixel;
+					cc0_error_pixel = local_model_cc0_error_pixel;
+					cc1_pixel = local_model_cc1_pixel;
+				}
+				else if (rasterizer_debug_options.draw_environment_fog &&
 					!TEST_FLAG(
 						local_parameters->geometry_flags,
 						_rasterizer_geometry_no_fog_bit))
@@ -2315,6 +2355,10 @@ void _rasterizer_model_draw(
 					cc0_error_pixel = 0xFF000000;
 					cc0_pixel = 0xFF000000;
 				}
+				local_model_cc0_pixel = cc0_pixel;
+				local_model_cc0_error_pixel = cc0_error_pixel;
+				local_model_cc1_pixel = cc1_pixel;
+				local_model_fog_valid = TRUE;
 
 				set_environment_shader_pixel_shader(
 					real_rgb_color_to_pixel32(&self_illumination_color),
@@ -2360,37 +2404,11 @@ void _rasterizer_model_draw(
 						shader_model->model.flags,
 						_shader_model_two_sided_bit))
 				{
-					vertex_constants[0].n[0] =
-						shader_model->model.detail_map_scale;
-					vertex_constants[0].n[1] =
-						shader_model->model.detail_map_scale*
-						shader_model->model.detail_map_v_scale;
-					vertex_constants[0].n[2] = 1.0f;
+					/* port: the second pass's constants are the first's but
+					for the winding's sign. The game set them again and
+					evaluated the texture animation again, from the same
+					shader, parameters and time. */
 					vertex_constants[0].n[3] = -1.0f;
-					vertex_constants[1].n[0] = 1.0f;
-					vertex_constants[1].n[1] = 0.0f;
-					vertex_constants[1].n[2] = 0.0f;
-					vertex_constants[1].n[3] = 0.0f;
-					vertex_constants[2].n[0] = 0.0f;
-					vertex_constants[2].n[1] = 1.0f;
-					vertex_constants[2].n[2] = 0.0f;
-					vertex_constants[2].n[3] = 0.0f;
-
-					shader_texture_animation_evaluate(
-						&shader_model->model.texture_animation,
-						&local_parameters->animation,
-						local_parameters->base_map_scale.i*
-							shader_model->model.map_u_scale,
-						local_parameters->base_map_scale.j*
-							shader_model->model.map_v_scale,
-						0.0f,
-						0.0f,
-						0.0f,
-						global_frame_parameters.game_time_sec,
-						&vertex_constants[1],
-						&vertex_constants[2]);
-					vertex_constants[2].n[2] =
-						shader_model->model.translucency;
 
 					IDirect3DDevice8_SetVertexShaderConstant(
 						global_d3d_device,
